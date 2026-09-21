@@ -304,69 +304,175 @@ export default function BeatUploader() {
           setUploadProgress(prev => ({ ...prev, [file.name]: 0 }));
         }
 
-        // Perform real multipart upload using XMLHttpRequest for real, accurate progress event listener tracking
-        await new Promise<void>((resolve, reject) => {
-          const xhr = new XMLHttpRequest();
-          const formDataPayload = new FormData();
-          formDataPayload.append('file', file);
+        const CHUNK_SIZE = 1 * 1024 * 1024; // 1MB chunks (completely safe from 413 / payload limits on any proxy)
+        let finalUrl = '';
 
-          xhr.upload.addEventListener('progress', (event) => {
-            if (event.lengthComputable) {
-              const percent = Math.round((event.loaded / event.total) * 100);
-              setUploadProgress(prev => ({
-                ...prev,
-                [file.name]: percent
-              }));
-            }
+        const performChunkedUpload = async () => {
+          console.log(`[UPLOADER] Using chunked upload pipeline for ${file.name}...`);
+          
+          // 1. Initialize chunked upload session
+          const initRes = await fetch('/api/uploads/initialize', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ fileName: file.name })
           });
+          const initData = await initRes.json();
+          if (!initData.success) {
+            throw new Error(initData.error || 'Failed to initialize chunked upload');
+          }
+          const { uploadId } = initData;
 
-          xhr.addEventListener('load', () => {
-            try {
-              if (xhr.status >= 200 && xhr.status < 300) {
-                const result = JSON.parse(xhr.responseText);
-                if (result.success) {
-                  // Guarantee it reaches real completed state
-                  setUploadProgress(prev => ({
-                    ...prev,
-                    [file.name]: 100
-                  }));
+          const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+          const uploadedChunkBytes = new Array(totalChunks).fill(0);
 
-                  // Update form fields with actual stored file URLs returned by server
-                  setFormData(prev => {
-                    if (type === 'audio') {
-                      if (role === 'tagged') return { ...prev, audioUrl: result.url };
-                      if (role === 'untagged') return { ...prev, untaggedWavUrl: result.url };
-                      if (role === 'untaggedMp3') return { ...prev, untaggedMp3Url: result.url };
-                      if (role === 'stems') return { ...prev, stemsZipUrl: result.url };
-                      if (role === 'tag') return { ...prev, voiceTagUrl: result.url };
-                    } else {
-                      return { ...prev, coverArtUrl: result.url };
-                    }
-                    return prev;
-                  });
-                  resolve();
-                } else {
-                  reject(new Error(result.error || 'Server error uploading file'));
+          // Helper to update progress based on actual bytes uploaded
+          const updateChunkProgress = () => {
+            const totalUploaded = uploadedChunkBytes.reduce((a, b) => a + b, 0);
+            const percent = Math.min(99, Math.round((totalUploaded / file.size) * 100));
+            setUploadProgress(prev => ({
+              ...prev,
+              [file.name]: percent
+            }));
+          };
+
+          // 2. Upload chunks sequentially
+          for (let partNum = 1; partNum <= totalChunks; partNum++) {
+            const start = (partNum - 1) * CHUNK_SIZE;
+            const end = Math.min(start + CHUNK_SIZE, file.size);
+            const chunk = file.slice(start, end);
+
+            // Fetch chunk upload target URL
+            const presignRes = await fetch(`/api/uploads/presign-chunk?uploadId=${uploadId}&partNumber=${partNum}`);
+            const presignData = await presignRes.json();
+            if (!presignData.success) {
+              throw new Error('Failed to obtain chunk upload destination');
+            }
+            const chunkUrl = presignData.url;
+
+            // Upload chunk using XMLHttpRequest for granular progress events
+            await new Promise<void>((resolveChunk, rejectChunk) => {
+              const xhr = new XMLHttpRequest();
+              xhr.open('PUT', chunkUrl, true);
+
+              xhr.upload.addEventListener('progress', (e) => {
+                if (e.lengthComputable) {
+                  uploadedChunkBytes[partNum - 1] = e.loaded;
+                  updateChunkProgress();
                 }
-              } else {
-                reject(new Error(`Server error with status code: ${xhr.status}`));
+              });
+
+              xhr.addEventListener('load', () => {
+                if (xhr.status >= 200 && xhr.status < 300) {
+                  uploadedChunkBytes[partNum - 1] = end - start; // set full chunk size as uploaded
+                  updateChunkProgress();
+                  resolveChunk();
+                } else {
+                  rejectChunk(new Error(`Chunk upload failed with status ${xhr.status}`));
+                }
+              });
+
+              xhr.addEventListener('error', () => rejectChunk(new Error('Chunk connection error')));
+              xhr.addEventListener('abort', () => rejectChunk(new Error('Chunk upload aborted')));
+
+              xhr.send(chunk);
+            });
+          }
+
+          // 3. Finalize upload to merge chunks
+          console.log(`[UPLOADER] Chunks uploaded. Finalizing and merging...`);
+          const finalizeRes = await fetch('/api/uploads/finalize', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ uploadId, fileName: file.name })
+          });
+          const finalizeData = await finalizeRes.json();
+          if (!finalizeData.success) {
+            throw new Error(finalizeData.error || 'Failed to merge chunks on server');
+          }
+
+          console.log(`[UPLOADER] Chunked upload successfully completed! Final URL:`, finalizeData.url);
+          finalUrl = finalizeData.url;
+        };
+
+        const performDirectUpload = async () => {
+          console.log(`[UPLOADER] Using direct single-request upload for ${file.name}...`);
+          await new Promise<void>((resolve, reject) => {
+            const xhr = new XMLHttpRequest();
+            const formDataPayload = new FormData();
+            formDataPayload.append('file', file);
+
+            xhr.upload.addEventListener('progress', (event) => {
+              if (event.lengthComputable) {
+                const percent = Math.round((event.loaded / event.total) * 100);
+                setUploadProgress(prev => ({
+                  ...prev,
+                  [file.name]: percent
+                }));
               }
-            } catch (err) {
-              reject(err);
+            });
+
+            xhr.addEventListener('load', () => {
+              try {
+                if (xhr.status >= 200 && xhr.status < 300) {
+                  const result = JSON.parse(xhr.responseText);
+                  if (result.success) {
+                    finalUrl = result.url;
+                    resolve();
+                  } else {
+                    reject(new Error(result.error || 'Server error uploading file'));
+                  }
+                } else {
+                  reject(new Error(`Server error with status code: ${xhr.status}`));
+                }
+              } catch (err) {
+                reject(err);
+              }
+            });
+
+            xhr.addEventListener('error', () => {
+              reject(new Error('Network error during file upload'));
+            });
+
+            xhr.addEventListener('abort', () => {
+              reject(new Error('File upload aborted'));
+            });
+
+            xhr.open('POST', `/api/upload-local?type=${type === 'audio' ? 'audio' : 'image'}`, true);
+            xhr.send(formDataPayload);
+          });
+        };
+
+        if (file.size > CHUNK_SIZE) {
+          await performChunkedUpload();
+        } else {
+          try {
+            await performDirectUpload();
+          } catch (directErr) {
+            console.warn(`[UPLOADER] Direct upload failed for ${file.name}, trying chunked fallback:`, directErr);
+            await performChunkedUpload();
+          }
+        }
+
+        if (finalUrl) {
+          // Guarantee it reaches real completed state
+          setUploadProgress(prev => ({
+            ...prev,
+            [file.name]: 100
+          }));
+
+          setFormData(prev => {
+            if (type === 'audio') {
+              if (role === 'tagged') return { ...prev, audioUrl: finalUrl };
+              if (role === 'untagged') return { ...prev, untaggedWavUrl: finalUrl };
+              if (role === 'untaggedMp3') return { ...prev, untaggedMp3Url: finalUrl };
+              if (role === 'stems') return { ...prev, stemsZipUrl: finalUrl };
+              if (role === 'tag') return { ...prev, voiceTagUrl: finalUrl };
+            } else {
+              return { ...prev, coverArtUrl: finalUrl };
             }
+            return prev;
           });
-
-          xhr.addEventListener('error', () => {
-            reject(new Error('Network error during file upload'));
-          });
-
-          xhr.addEventListener('abort', () => {
-            reject(new Error('File upload aborted'));
-          });
-
-          xhr.open('POST', `/api/upload-local?type=${type === 'audio' ? 'audio' : 'image'}`, true);
-          xhr.send(formDataPayload);
-        });
+        }
       }
     } catch (err) {
       console.error("Upload process encountered error:", err);
@@ -515,6 +621,15 @@ export default function BeatUploader() {
   // Input verification list for review step
   const getValidationErrors = () => {
     const errors: string[] = [];
+    console.log("VALIDATION DEBUG - Current formData state:", {
+      audioUrl: formData.audioUrl,
+      untaggedWavUrl: formData.untaggedWavUrl,
+      untaggedMp3Url: formData.untaggedMp3Url,
+      stemsZipUrl: formData.stemsZipUrl,
+      coverArtUrl: formData.coverArtUrl,
+      isUploading
+    });
+
     if (!formData.title.trim()) {
       errors.push("Beat title is a required property.");
     }
@@ -541,6 +656,10 @@ export default function BeatUploader() {
 
     if (isUploading) {
       errors.push("Uploading files is in progress. Please wait...");
+    }
+
+    if (errors.length > 0) {
+      console.log("VALIDATION DEBUG - Validation Errors calculated:", errors);
     }
     return errors;
   };
@@ -1892,21 +2011,60 @@ export default function BeatUploader() {
                       <button onClick={() => setCurrentStep(0)} className="text-[10px] font-bold text-indigo-400">Edit</button>
                     </div>
                     <div className="grid grid-cols-2 gap-3 text-xs">
-                      <div className="flex items-center gap-2">
-                        {formData.audioUrl ? <Check className="w-4 h-4 text-emerald-400" /> : <span className="w-4 h-4 bg-neutral-900 rounded-full" />}
-                        <span className="text-neutral-400">Tagged Preview (MP3)</span>
+                      <div className="flex flex-col gap-1">
+                        <div className="flex items-center gap-2">
+                          {formData.audioUrl ? <Check className="w-4 h-4 text-emerald-400" /> : <span className="w-4 h-4 bg-neutral-900 rounded-full" />}
+                          <span className="text-neutral-400">Tagged Preview (MP3)</span>
+                        </div>
+                        {formData.audioUrl && (
+                          <span className="text-[9px] font-mono text-neutral-500 truncate max-w-[200px] pl-6" title={formData.audioUrl}>
+                            {formData.audioUrl}
+                          </span>
+                        )}
                       </div>
-                      <div className="flex items-center gap-2">
-                        {formData.untaggedWavUrl ? <Check className="w-4 h-4 text-emerald-400" /> : <span className="w-4 h-4 bg-neutral-900 rounded-full" />}
-                        <span className="text-neutral-400">Untagged WAV master</span>
+                      <div className="flex flex-col gap-1">
+                        <div className="flex items-center gap-2">
+                          {formData.untaggedWavUrl ? <Check className="w-4 h-4 text-emerald-400" /> : <span className="w-4 h-4 bg-neutral-900 rounded-full" />}
+                          <span className="text-neutral-400">Untagged WAV master</span>
+                        </div>
+                        {formData.untaggedWavUrl && (
+                          <span className="text-[9px] font-mono text-neutral-500 truncate max-w-[200px] pl-6" title={formData.untaggedWavUrl}>
+                            {formData.untaggedWavUrl}
+                          </span>
+                        )}
                       </div>
-                      <div className="flex items-center gap-2">
-                        {formData.stemsZipUrl ? <Check className="w-4 h-4 text-emerald-400" /> : <span className="w-4 h-4 bg-neutral-900 rounded-full" />}
-                        <span className="text-neutral-400">Stems ZIP Archive</span>
+                      <div className="flex flex-col gap-1">
+                        <div className="flex items-center gap-2">
+                          {formData.stemsZipUrl ? <Check className="w-4 h-4 text-emerald-400" /> : <span className="w-4 h-4 bg-neutral-900 rounded-full" />}
+                          <span className="text-neutral-400">Stems ZIP Archive</span>
+                        </div>
+                        {formData.stemsZipUrl && (
+                          <span className="text-[9px] font-mono text-neutral-500 truncate max-w-[200px] pl-6" title={formData.stemsZipUrl}>
+                            {formData.stemsZipUrl}
+                          </span>
+                        )}
                       </div>
-                      <div className="flex items-center gap-2">
-                        {formData.voiceTagUrl ? <Check className="w-4 h-4 text-emerald-400" /> : <span className="w-4 h-4 bg-neutral-900 rounded-full" />}
-                        <span className="text-neutral-400">Watermark Voice Tag</span>
+                      <div className="flex flex-col gap-1">
+                        <div className="flex items-center gap-2">
+                          {formData.voiceTagUrl ? <Check className="w-4 h-4 text-emerald-400" /> : <span className="w-4 h-4 bg-neutral-900 rounded-full" />}
+                          <span className="text-neutral-400">Watermark Voice Tag</span>
+                        </div>
+                        {formData.voiceTagUrl && (
+                          <span className="text-[9px] font-mono text-neutral-500 truncate max-w-[200px] pl-6" title={formData.voiceTagUrl}>
+                            {formData.voiceTagUrl}
+                          </span>
+                        )}
+                      </div>
+                      <div className="flex flex-col gap-1 col-span-2 border-t border-neutral-900 pt-2 mt-1">
+                        <div className="flex items-center gap-2">
+                          {formData.coverArtUrl ? <Check className="w-4 h-4 text-emerald-400" /> : <span className="w-4 h-4 bg-neutral-900 rounded-full" />}
+                          <span className="text-neutral-400">Cover Artwork (Image)</span>
+                        </div>
+                        {formData.coverArtUrl && (
+                          <span className="text-[9px] font-mono text-neutral-500 truncate max-w-[400px] pl-6" title={formData.coverArtUrl}>
+                            {formData.coverArtUrl}
+                          </span>
+                        )}
                       </div>
                     </div>
                   </div>

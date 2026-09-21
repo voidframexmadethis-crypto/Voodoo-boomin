@@ -198,7 +198,7 @@ export default function BeatPackUploader({ onPackPublished }: { onPackPublished?
     }
   };
 
-  const handleCoverUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleCoverUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
       const url = URL.createObjectURL(file);
@@ -206,25 +206,91 @@ export default function BeatPackUploader({ onPackPublished }: { onPackPublished?
       setIsUploadingCover(true);
       setValidationError(null);
 
-      const formDataPayload = new FormData();
-      formDataPayload.append('file', file);
-      fetch('/api/upload-local?type=image', {
-        method: 'POST',
-        body: formDataPayload,
-      })
-        .then(res => res.json())
-        .then(result => {
+      try {
+        const CHUNK_SIZE = 1 * 1024 * 1024; // 1MB chunks (fully bypasses any server/proxy limits)
+        let finalUrl = '';
+
+        const performDirectUpload = async () => {
+          const formDataPayload = new FormData();
+          formDataPayload.append('file', file);
+          const res = await fetch('/api/upload-local?type=image', {
+            method: 'POST',
+            body: formDataPayload,
+          });
+          const result = await res.json();
           if (result.success) {
-            setCoverArtUrl(result.url);
+            finalUrl = result.url;
           } else {
-            setValidationError('Failed to upload cover art to the server: ' + (result.error || 'Unknown error'));
+            throw new Error(result.error || 'Server error uploading file');
           }
-        })
-        .catch(err => {
-          console.error("Cover Art upload error:", err);
-          setValidationError("Failed to upload cover art to the server.");
-        })
-        .finally(() => setIsUploadingCover(false));
+        };
+
+        const performChunkedUpload = async () => {
+          console.log(`[PACK UPLOADER] Using chunked upload pipeline for cover...`);
+          const initRes = await fetch('/api/uploads/initialize', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ fileName: file.name })
+          });
+          const initData = await initRes.json();
+          if (!initData.success) {
+            throw new Error(initData.error || 'Failed to initialize chunked upload');
+          }
+          const { uploadId } = initData;
+
+          const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+          for (let partNum = 1; partNum <= totalChunks; partNum++) {
+            const start = (partNum - 1) * CHUNK_SIZE;
+            const end = Math.min(start + CHUNK_SIZE, file.size);
+            const chunk = file.slice(start, end);
+
+            const presignRes = await fetch(`/api/uploads/presign-chunk?uploadId=${uploadId}&partNumber=${partNum}`);
+            const presignData = await presignRes.json();
+            if (!presignData.success) {
+              throw new Error('Failed to obtain chunk upload destination');
+            }
+            const chunkUrl = presignData.url;
+
+            await fetch(chunkUrl, {
+              method: 'PUT',
+              body: chunk
+            });
+          }
+
+          const finalizeRes = await fetch('/api/uploads/finalize', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ uploadId, fileName: file.name })
+          });
+          const finalizeData = await finalizeRes.json();
+          if (!finalizeData.success) {
+            throw new Error(finalizeData.error || 'Failed to merge chunks on server');
+          }
+          finalUrl = finalizeData.url;
+        };
+
+        if (file.size > CHUNK_SIZE) {
+          await performChunkedUpload();
+        } else {
+          try {
+            await performDirectUpload();
+          } catch (directErr) {
+            console.warn("[PACK UPLOADER] Direct upload failed, falling back to chunked upload:", directErr);
+            await performChunkedUpload();
+          }
+        }
+
+        if (finalUrl) {
+          setCoverArtUrl(finalUrl);
+        } else {
+          throw new Error('Upload succeeded but no URL was returned');
+        }
+      } catch (err: any) {
+        console.error("Cover Art upload error:", err);
+        setValidationError("Failed to upload cover art to the server: " + (err.message || 'Unknown error'));
+      } finally {
+        setIsUploadingCover(false);
+      }
     }
   };
 

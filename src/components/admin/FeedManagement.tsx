@@ -80,13 +80,14 @@ export default function FeedManagement() {
     formData.append('file', file);
 
     try {
-      const res = await fetch('/api/upload?type=image', {
+      const res = await fetch('/api/upload-local?type=image', {
         method: 'POST',
         body: formData,
       });
       const data = await res.json();
-      if (data.fileUrl) {
-        setImageUrl(data.fileUrl);
+      const finalImgUrl = data.fileUrl || data.url;
+      if (finalImgUrl) {
+        setImageUrl(finalImgUrl);
       }
     } catch (err) {
       console.error('Image upload failed:', err);

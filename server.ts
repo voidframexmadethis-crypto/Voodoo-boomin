@@ -33,7 +33,12 @@ const storage_config = multer.diskStorage({
   }
 });
 
-const upload = multer({ storage: storage_config });
+const upload = multer({
+  storage: storage_config,
+  limits: {
+    fileSize: 85 * 1024 * 1024 * 1024 * 1024 // 85 TB
+  }
+});
 
 // 📂 BEATS JSON STORAGE
 const BEATS_FILE_PATH = path.join(process.cwd(), 'beats.json');
@@ -340,7 +345,8 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
   
-  app.use(express.json({ limit: '50mb' }));
+  app.use(express.json({ limit: '85tb' }));
+  app.use(express.urlencoded({ limit: '85tb', extended: true }));
   
   // 📂 Static local audio and artwork serving
   app.use('/local_storage', express.static(LOCAL_STORAGE_ROOT));
@@ -785,7 +791,7 @@ async function startServer() {
   });
 
   // 🚀 Direct Local File Upload Endpoint
-  app.post('/api/upload-local', upload.single('file') as any, (req, res) => {
+  app.post(['/api/upload-local', '/api/upload'], upload.single('file') as any, (req, res) => {
     if (!req.file) {
       return res.status(400).json({ success: false, error: 'No file uploaded' });
     }
@@ -795,6 +801,7 @@ async function startServer() {
     res.status(200).json({
       success: true,
       url: fileUrl,
+      fileUrl: fileUrl,
       filename: req.file.filename
     });
   });
