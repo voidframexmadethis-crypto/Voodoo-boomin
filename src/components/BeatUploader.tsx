@@ -250,142 +250,128 @@ export default function BeatUploader() {
     
     setIsUploading(true);
     const fileArray = Array.from(files);
-    const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB
 
-    for (const file of fileArray) {
-      const fileId = Math.random().toString(36).substring(7);
-      let instantObjectUrl = '';
-      try {
-        instantObjectUrl = URL.createObjectURL(file);
-      } catch (e) {}
-
-      const cleanTitle = file.name.replace(/\.[^/.]+$/, "").replace(/[-_]/g, " ").replace(/\b\w/g, l => l.toUpperCase());
-      const bpmMatch = file.name.match(/(\d{2,3})\s*bpm/i);
-      const extractedBpm = bpmMatch ? Number(bpmMatch[1]) : 130;
-
-      if (type === 'audio') {
-        setFormData(prev => ({
-          ...prev, 
-          audioUrl: (role === 'tagged' && !prev.audioUrl) ? instantObjectUrl : prev.audioUrl,
-          untaggedWavUrl: (role === 'untagged' && !prev.untaggedWavUrl) ? instantObjectUrl : prev.untaggedWavUrl,
-          untaggedMp3Url: (role === 'untaggedMp3' && !prev.untaggedMp3Url) ? instantObjectUrl : prev.untaggedMp3Url,
-          stemsZipUrl: (role === 'stems' && !prev.stemsZipUrl) ? instantObjectUrl : prev.stemsZipUrl,
-          voiceTagUrl: (role === 'tag' && !prev.voiceTagUrl) ? instantObjectUrl : prev.voiceTagUrl,
-          title: prev.title || cleanTitle,
-          bpm: prev.bpm || extractedBpm
-        }));
-        setUploadedFiles(prev => [...prev, file]);
-        setUploadProgress(prev => ({ ...prev, [file.name]: 0 }));
-        
-        // Concurrently run background audio analysis for BPM, Key, Duration, and Waveform peaks
-        if (role === 'tagged' || role === 'untagged') {
-          setIsAnalyzing(true);
-          setAnalysisNotice("Sonar processing: extracting BPM, key scale, and waveform peaks in background...");
-          analyzeAudioFile(file).then(result => {
-            setFormData(prev => ({
-              ...prev,
-              bpm: prev.bpm || result.bpm,
-              key: prev.key || result.key,
-              mode: prev.mode || result.mode,
-              durationSeconds: result.durationSeconds || prev.durationSeconds,
-              waveformData: result.waveformData || prev.waveformData,
-              primaryGenre: prev.primaryGenre === 'Hip Hop' ? (result.primaryGenre || 'Hip Hop') : prev.primaryGenre,
-              tags: prev.tags.length === 0 ? (result.tags || []) : prev.tags,
-              mood: prev.mood.length === 0 ? (result.mood || []) : prev.mood,
-            }));
-            setAnalysisNotice(`Acoustic Profile Decoded! BPM: ${result.bpm} | Key: ${result.key}`);
-            setIsAnalyzing(false);
-          }).catch(err => {
-            console.warn("Background analysis failed:", err);
-            setIsAnalyzing(false);
-          });
-        }
-      } else {
-        setFormData(prev => ({ ...prev, coverArtUrl: prev.coverArtUrl || instantObjectUrl }));
-      }
-
-      if (type === 'audio') {
+    try {
+      for (const file of fileArray) {
+        let instantObjectUrl = '';
         try {
-          const sessionResponse = await fetch('/api/uploads/initialize', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ fileName: file.name, fileSize: file.size })
-          });
-          const { uploadId } = await sessionResponse.json();
+          instantObjectUrl = URL.createObjectURL(file);
+        } catch (e) {}
 
-          const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
-          for (let i = 0; i < totalChunks; i++) {
-            const start = i * CHUNK_SIZE;
-            const end = Math.min(start + CHUNK_SIZE, file.size);
-            const chunk = file.slice(start, end);
+        const cleanTitle = file.name.replace(/\.[^/.]+$/, "").replace(/[-_]/g, " ").replace(/\b\w/g, l => l.toUpperCase());
+        const bpmMatch = file.name.match(/(\d{2,3})\s*bpm/i);
+        const extractedBpm = bpmMatch ? Number(bpmMatch[1]) : 130;
 
-            const presignedUrlResp = await fetch(`/api/uploads/presign-chunk?uploadId=${uploadId}&partNumber=${i+1}`);
-            const { url } = await presignedUrlResp.json();
-
-            await fetch(url, { method: 'PUT', body: chunk });
-            setUploadProgress(prev => ({
-              ...prev,
-              [file.name]: Math.round(((i + 1) / totalChunks) * 100)
-            }));
-          }
-
-          const finalizeRes = await fetch('/api/uploads/finalize', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ uploadId, fileName: file.name })
-          });
-          const finalData = await finalizeRes.json();
+        if (type === 'audio') {
+          setFormData(prev => ({
+            ...prev, 
+            audioUrl: (role === 'tagged' && !prev.audioUrl) ? instantObjectUrl : prev.audioUrl,
+            untaggedWavUrl: (role === 'untagged' && !prev.untaggedWavUrl) ? instantObjectUrl : prev.untaggedWavUrl,
+            untaggedMp3Url: (role === 'untaggedMp3' && !prev.untaggedMp3Url) ? instantObjectUrl : prev.untaggedMp3Url,
+            stemsZipUrl: (role === 'stems' && !prev.stemsZipUrl) ? instantObjectUrl : prev.stemsZipUrl,
+            voiceTagUrl: (role === 'tag' && !prev.voiceTagUrl) ? instantObjectUrl : prev.voiceTagUrl,
+            title: prev.title || cleanTitle,
+            bpm: prev.bpm || extractedBpm
+          }));
+          setUploadedFiles(prev => [...prev, file]);
+          setUploadProgress(prev => ({ ...prev, [file.name]: 0 }));
           
-          if (finalData.success) {
-            setFormData(prev => {
-              if (role === 'tagged') return { ...prev, audioUrl: finalData.url };
-              if (role === 'untagged') return { ...prev, untaggedWavUrl: finalData.url };
-              if (role === 'stems') return { ...prev, stemsZipUrl: finalData.url };
-              if (role === 'tag') return { ...prev, voiceTagUrl: finalData.url };
-              return prev;
+          // Concurrently run background audio analysis for BPM, Key, Duration, and Waveform peaks
+          if (role === 'tagged' || role === 'untagged') {
+            setIsAnalyzing(true);
+            setAnalysisNotice("Sonar processing: extracting BPM, key scale, and waveform peaks in background...");
+            analyzeAudioFile(file).then(result => {
+              setFormData(prev => ({
+                ...prev,
+                bpm: prev.bpm || result.bpm,
+                key: prev.key || result.key,
+                mode: prev.mode || result.mode,
+                durationSeconds: result.durationSeconds || prev.durationSeconds,
+                waveformData: result.waveformData || prev.waveformData,
+                primaryGenre: prev.primaryGenre === 'Hip Hop' ? (result.primaryGenre || 'Hip Hop') : prev.primaryGenre,
+                tags: prev.tags.length === 0 ? (result.tags || []) : prev.tags,
+                mood: prev.mood.length === 0 ? (result.mood || []) : prev.mood,
+              }));
+              setAnalysisNotice(`Acoustic Profile Decoded! BPM: ${result.bpm} | Key: ${result.key}`);
+              setIsAnalyzing(false);
+            }).catch(err => {
+              console.warn("Background analysis failed:", err);
+              setIsAnalyzing(false);
             });
           }
-        } catch (err) {
-          console.error("Chunked upload session error, falling back to direct upload:", err);
+        } else {
+          setFormData(prev => ({ ...prev, coverArtUrl: prev.coverArtUrl || instantObjectUrl }));
+          setUploadProgress(prev => ({ ...prev, [file.name]: 0 }));
+        }
+
+        // Perform real multipart upload using XMLHttpRequest for real, accurate progress event listener tracking
+        await new Promise<void>((resolve, reject) => {
+          const xhr = new XMLHttpRequest();
           const formDataPayload = new FormData();
           formDataPayload.append('file', file);
-          try {
-            const res = await fetch(`/api/upload-local?type=audio`, {
-              method: 'POST',
-              body: formDataPayload,
-            });
-            const result = await res.json();
-            if (result.success) {
-              setFormData(prev => {
-                if (role === 'tagged') return { ...prev, audioUrl: result.url };
-                if (role === 'untagged') return { ...prev, untaggedWavUrl: result.url };
-                if (role === 'stems') return { ...prev, stemsZipUrl: result.url };
-                if (role === 'tag') return { ...prev, voiceTagUrl: result.url };
-                return prev;
-              });
+
+          xhr.upload.addEventListener('progress', (event) => {
+            if (event.lengthComputable) {
+              const percent = Math.round((event.loaded / event.total) * 100);
+              setUploadProgress(prev => ({
+                ...prev,
+                [file.name]: percent
+              }));
             }
-          } catch (uploadErr) {
-            console.error("Direct audio upload error:", uploadErr);
-          }
-        } finally {
-          setIsUploading(false);
-        }
-      } else {
-        const formDataPayload = new FormData();
-        formDataPayload.append('file', file);
-        fetch(`/api/upload-local?type=${type}`, {
-          method: 'POST',
-          body: formDataPayload,
-        })
-          .then(res => res.json())
-          .then(result => {
-            if (result.success) {
-              setFormData(prev => ({ ...prev, coverArtUrl: result.url }));
+          });
+
+          xhr.addEventListener('load', () => {
+            try {
+              if (xhr.status >= 200 && xhr.status < 300) {
+                const result = JSON.parse(xhr.responseText);
+                if (result.success) {
+                  // Guarantee it reaches real completed state
+                  setUploadProgress(prev => ({
+                    ...prev,
+                    [file.name]: 100
+                  }));
+
+                  // Update form fields with actual stored file URLs returned by server
+                  setFormData(prev => {
+                    if (type === 'audio') {
+                      if (role === 'tagged') return { ...prev, audioUrl: result.url };
+                      if (role === 'untagged') return { ...prev, untaggedWavUrl: result.url };
+                      if (role === 'untaggedMp3') return { ...prev, untaggedMp3Url: result.url };
+                      if (role === 'stems') return { ...prev, stemsZipUrl: result.url };
+                      if (role === 'tag') return { ...prev, voiceTagUrl: result.url };
+                    } else {
+                      return { ...prev, coverArtUrl: result.url };
+                    }
+                    return prev;
+                  });
+                  resolve();
+                } else {
+                  reject(new Error(result.error || 'Server error uploading file'));
+                }
+              } else {
+                reject(new Error(`Server error with status code: ${xhr.status}`));
+              }
+            } catch (err) {
+              reject(err);
             }
-          })
-          .catch(err => console.error("Cover Art upload error:", err))
-          .finally(() => setIsUploading(false));
+          });
+
+          xhr.addEventListener('error', () => {
+            reject(new Error('Network error during file upload'));
+          });
+
+          xhr.addEventListener('abort', () => {
+            reject(new Error('File upload aborted'));
+          });
+
+          xhr.open('POST', `/api/upload-local?type=${type === 'audio' ? 'audio' : 'image'}`, true);
+          xhr.send(formDataPayload);
+        });
       }
+    } catch (err) {
+      console.error("Upload process encountered error:", err);
+    } finally {
+      setIsUploading(false);
     }
   };
 
