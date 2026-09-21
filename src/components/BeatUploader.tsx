@@ -668,7 +668,13 @@ export default function BeatUploader() {
       errors.push("Cover artwork upload is still in progress. Please wait...");
     }
 
-    if (isUploading) {
+    const isAudioUploading = (formData.audioUrl && formData.audioUrl.startsWith('blob:')) || 
+                             (formData.untaggedWavUrl && formData.untaggedWavUrl.startsWith('blob:')) ||
+                             (formData.untaggedMp3Url && formData.untaggedMp3Url.startsWith('blob:')) ||
+                             (formData.stemsZipUrl && formData.stemsZipUrl.startsWith('blob:'));
+    const isCoverUploading = formData.coverArtUrl && formData.coverArtUrl.startsWith('blob:');
+
+    if (isUploading && (isAudioUploading || isCoverUploading)) {
       errors.push("Uploading files is in progress. Please wait...");
     }
 
