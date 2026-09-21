@@ -325,10 +325,12 @@ export default function BeatUploader() {
           const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
           const uploadedChunkBytes = new Array(totalChunks).fill(0);
 
-          // Helper to update progress based on actual bytes uploaded
-          const updateChunkProgress = () => {
+          // Helper to update progress based on actual bytes uploaded and chunk completion steps
+          const updateChunkProgress = (currentPart: number = totalChunks) => {
             const totalUploaded = uploadedChunkBytes.reduce((a, b) => a + b, 0);
-            const percent = Math.min(99, Math.round((totalUploaded / file.size) * 100));
+            const bytePercent = Math.min(99, Math.round((totalUploaded / file.size) * 100));
+            const stepPercent = Math.min(99, Math.round((currentPart / totalChunks) * 100));
+            const percent = Math.max(bytePercent, stepPercent);
             setUploadProgress(prev => ({
               ...prev,
               [file.name]: percent
@@ -357,14 +359,14 @@ export default function BeatUploader() {
               xhr.upload.addEventListener('progress', (e) => {
                 if (e.lengthComputable) {
                   uploadedChunkBytes[partNum - 1] = e.loaded;
-                  updateChunkProgress();
+                  updateChunkProgress(partNum - 1);
                 }
               });
 
               xhr.addEventListener('load', () => {
                 if (xhr.status >= 200 && xhr.status < 300) {
                   uploadedChunkBytes[partNum - 1] = end - start; // set full chunk size as uploaded
-                  updateChunkProgress();
+                  updateChunkProgress(partNum);
                   resolveChunk();
                 } else {
                   rejectChunk(new Error(`Chunk upload failed with status ${xhr.status}`));
@@ -605,6 +607,19 @@ export default function BeatUploader() {
       waveformData: formData.waveformData.length > 0 ? formData.waveformData : undefined,
     };
 
+    console.log("[BEAT PUBLISH DEBUG] Final submit payload to addBeat / /api/beats:", {
+      id: newBeat.id,
+      title: newBeat.title,
+      audioUrl: newBeat.audioUrl,
+      untaggedWavUrl: newBeat.untaggedWavUrl,
+      untaggedMp3Url: newBeat.untaggedMp3Url,
+      stemsZipUrl: newBeat.stemsZipUrl,
+      coverArtUrl: newBeat.coverArtUrl,
+      bpm: newBeat.bpm,
+      key: newBeat.key,
+      price: newBeat.price
+    });
+
     try {
       await addBeat(newBeat);
     } catch (err) {
@@ -635,13 +650,14 @@ export default function BeatUploader() {
   // Input verification list for review step
   const getValidationErrors = () => {
     const errors: string[] = [];
-    console.log("VALIDATION DEBUG - Current formData state:", {
+    console.log("[BEAT PUBLISH DEBUG] Validation check state:", {
       audioUrl: formData.audioUrl,
       untaggedWavUrl: formData.untaggedWavUrl,
       untaggedMp3Url: formData.untaggedMp3Url,
       stemsZipUrl: formData.stemsZipUrl,
       coverArtUrl: formData.coverArtUrl,
-      isUploading
+      isUploading,
+      uploadProgress
     });
 
     if (!formData.title.trim()) {
