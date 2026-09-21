@@ -472,6 +472,20 @@ export default function BeatUploader() {
             }
             return prev;
           });
+        } else {
+          // Clear blob URL if upload failed to return finalUrl
+          setFormData(prev => {
+            if (type === 'audio') {
+              if (role === 'tagged' && prev.audioUrl === instantObjectUrl) return { ...prev, audioUrl: '' };
+              if (role === 'untagged' && prev.untaggedWavUrl === instantObjectUrl) return { ...prev, untaggedWavUrl: '' };
+              if (role === 'untaggedMp3' && prev.untaggedMp3Url === instantObjectUrl) return { ...prev, untaggedMp3Url: '' };
+              if (role === 'stems' && prev.stemsZipUrl === instantObjectUrl) return { ...prev, stemsZipUrl: '' };
+              if (role === 'tag' && prev.voiceTagUrl === instantObjectUrl) return { ...prev, voiceTagUrl: '' };
+            } else {
+              if (prev.coverArtUrl === instantObjectUrl) return { ...prev, coverArtUrl: '' };
+            }
+            return prev;
+          });
         }
       }
     } catch (err) {
